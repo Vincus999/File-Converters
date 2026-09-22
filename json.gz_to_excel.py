@@ -1,25 +1,26 @@
 #!/usr/bin/env python3
-"""CNV annotációs JSON → XLSX átalakító.
+"""CNV annotation JSON → XLSX converter.
 
-A bemeneti JSON struktúrája:
+The input JSON structur:
   { "header": {...}, "positions": [...], "samples": [...] }
 
-Minden position egy sor lesz az Excelben.
-A listás mezők (clinvar, decipher, variants) összefoglalva jelennek meg.
+Every position becomes a new row in Excel.
+The lists (clinvar, decipher, variants) are summarized.
 """
 import json
 import sys
 import glob
 from pathlib import Path
 import gzip
+from typing import cast
 
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
 
-# Segédfüggvények
+# Helper functions
 def _join_unique(items, sep=", ", limit=None):
-    """Unikális értékek összefűzése, opcionális limit."""
+    """Unique value merging, optional limit."""
     seen = []
     for item in items:
         s = str(item)
@@ -31,7 +32,7 @@ def _join_unique(items, sep=", ", limit=None):
 
 
 def _safe_get(d, *keys, default=""):
-    """Biztonságos nested dict/list elérés."""
+    """Secure nested dict/list access."""
     for key in keys:
         if isinstance(d, dict):
             d = d.get(key, default)
@@ -39,18 +40,18 @@ def _safe_get(d, *keys, default=""):
             return default
     return d if d is not None else default
 
-# GZ fájlok kicsomagolása
+# GZ uncompress
 def _gunzip_json(gz_path):
-    """GZ fájl kicsomagolása és JSON betöltése."""
+    """GZ file uncompress and JSON loading."""
     with gzip.open(gz_path, 'rt', encoding='utf-8') as f:
         return json.load(f)
 
-# Position → sor konvertálás
+# Position → row conversion
 def position_to_row(pos):
-    """Egy position dict-ből egyetlen lapított sort készít."""
+    """One position from dict made a row."""
     row = {}
 
-    # Alapadatok 
+    # Basic data 
     row["chromosome"] = pos.get("chromosome", "")
     row["position"] = pos.get("position", "")
     row["svEnd"] = pos.get("svEnd", "")
@@ -67,7 +68,7 @@ def position_to_row(pos):
     ciEnd = pos.get("ciEnd", [])
     row["ciEnd"] = f"{ciEnd[0]},{ciEnd[1]}" if len(ciEnd) >= 2 else ""
 
-    # Első sample adatai 
+    # First sample data 
     samples = pos.get("samples", [])
     if samples and isinstance(samples[0], dict):
         s = samples[0]
@@ -83,7 +84,7 @@ def position_to_row(pos):
         row["sample_binCount"] = ""
         row["sample_segmentMean"] = ""
 
-    # ClinVar összefoglaló 
+    # ClinVar summary 
     clinvar = pos.get("clinvar", [])
     row["clinvar_count"] = len(clinvar)
     all_sig = []
@@ -101,7 +102,7 @@ def position_to_row(pos):
     row["clinvar_top_ids"] = _join_unique(all_ids, limit=5)
     row["clinvar_top_review"] = _join_unique(all_review, limit=5)
 
-    # Decipher összefoglaló 
+    # Decipher summary 
     decipher = pos.get("decipher", [])
     row["decipher_count"] = len(decipher)
     max_del = 0.0
@@ -112,14 +113,14 @@ def position_to_row(pos):
     row["decipher_maxDelFreq"] = max_del if max_del > 0 else ""
     row["decipher_maxDupFreq"] = max_dup if max_dup > 0 else ""
 
-    # Variant + gén adatok
+    # Variant + gene data
     variants = pos.get("variants", [])
     if variants and isinstance(variants[0], dict):
         v = variants[0]
         row["variant_type"] = v.get("variantType", "")
         row["variant_nomenclature"] = v.get("simpleNomenclature", "")
 
-        # Gének, consequence, impact a transcript-okból
+        # Genes, consequence, impact from transcripts
         genes = []
         consequences = []
         impacts = []
@@ -146,7 +147,7 @@ def position_to_row(pos):
     return row
 
 
-# Oszlopsorrend meghatározása
+# Column order 
 COLUMN_ORDER = [
     "chromosome", "position", "svEnd", "svLength", "id", "quality",
     "cytogeneticBand", "refAllele", "altAlleles", "filters",
@@ -161,7 +162,7 @@ COLUMN_ORDER = [
 ]
 
 
-# Fő konvertáló függvény
+# Main conversion function
 def convert(json_path: str, xlsx_path: str) -> None:
     json_file = Path(json_path)
     if not json_file.exists():
@@ -175,17 +176,18 @@ def convert(json_path: str, xlsx_path: str) -> None:
 
     positions = data.get("positions", []) if isinstance(data, dict) else []
 
-    # Sorok generálása
+    # Generate rows
     rows = [position_to_row(pos) for pos in positions]
 
-    # Oszlopfejlécek
+    # Headers
     headers = COLUMN_ORDER[:]
 
     wb = Workbook()
     ws = wb.active
+    assert ws is not None
     ws.title = "CNV Adatok"
 
-    # Fejléc sor
+    # Header row
     ws.append(headers)
     header_font = Font(bold=True, color="FFFFFF")
     header_fill = PatternFill(start_color="4472C4", end_color="4472C4", fill_type="solid")
@@ -194,11 +196,11 @@ def convert(json_path: str, xlsx_path: str) -> None:
         cell.fill = header_fill
         cell.alignment = Alignment(horizontal="center")
 
-    # Adatsorok
+    # Data
     for row_dict in rows:
         ws.append([row_dict.get(h, "") for h in headers])
 
-    # Oszlopszélesség automatikus becslése
+    # Column width automatic estimation
     for i, header in enumerate(headers, start=1):
         max_len = len(str(header))
         for row_dict in rows:
@@ -206,22 +208,22 @@ def convert(json_path: str, xlsx_path: str) -> None:
             max_len = max(max_len, len(str(val)))
         ws.column_dimensions[get_column_letter(i)].width = min(max_len + 2, 50)
 
-    # Fejléc rögzítése
+    # Pinning headers
     ws.freeze_panes = "A2"
 
-    # Szűrők a fejléc sorra
+    # filters for headers
     ws.auto_filter.ref = ws.dimensions
 
     wb.save(xlsx_path)
     if not rows:
-        print(f"Figyelmeztetés: Nincsenek positions adatok a JSON-ben. Üres Excel (csak fejléc) generálva: {xlsx_path}")
+        print(f"WARNING: There is no position data in the JSON file. Empty Excel (headers only) is generated: {xlsx_path}")
     else:
-        print(f"Kész! {len(rows)} CNV pozíció mentve ide: {xlsx_path}")
+        print(f"Complete! {len(rows)} CNV position saved to: {xlsx_path}")
 
 
-# Tömeges konvertálás
+# Batch conversion
 def convert_batch(json_files):
-    """Több JSON fájl konvertálása XLSX-be, azonos könyvtárba."""
+    """More JSON file's conversion to XLSX to same folder."""
     success = 0
     empty = 0
     errors = 0
@@ -244,7 +246,8 @@ def decompress_gz(gz_path, delete_gz=True):
     json_path = str(gz_path).rsplit(".gz", 1)[0]
     with gzip.open(gz_path, 'rb') as f_in:
         with open(json_path, 'wb') as f_out:
-            f_out.write(f_in.read())
+            data = cast(bytes, f_in.read())
+            f_out.write(data)
     if delete_gz:
         gz_path.unlink()
     return json_path
